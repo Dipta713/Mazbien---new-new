@@ -57,6 +57,7 @@ export default function Navbar({ email, isConsultant }: Props) {
           </Link>
           {email ? (
             <>
+              <span className="hidden max-w-[160px] truncate text-sm text-ink/60 xl:inline" title={email}>{email}</span>
               <Link href={isConsultant ? "/consultant" : "/dashboard"} className={link}>
                 {isConsultant ? "Consultant dashboard" : "My assessments"}
               </Link>
@@ -94,6 +95,7 @@ export default function Navbar({ email, isConsultant }: Props) {
             <Link href="/contact" onClick={close} className="rounded-xl px-3 py-3 font-semibold">Contact</Link>
             {email ? (
               <>
+                <p className="px-3 py-2 text-sm text-ink/60">Signed in as {email}</p>
                 <Link href={isConsultant ? "/consultant" : "/dashboard"} onClick={close} className="rounded-xl px-3 py-3 font-semibold">
                   {isConsultant ? "Consultant dashboard" : "My assessments"}
                 </Link>
