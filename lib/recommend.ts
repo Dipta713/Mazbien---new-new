@@ -2,9 +2,10 @@
 // Every suggestion carries a plain-language "why" tied to what the client picked.
 
 export type AddonRef = { id: string; slug: string; name: string };
-type Rule = { addon: string; triggers: string[]; why: string };
+export type Rule = { addon: string; triggers: string[]; why: string };
 
 // >>> EDIT HERE: RECOMMENDATION RULES (which answers trigger which add-on, plus the 'why' text) <<<
+// These are the fallback rules. The app loads the same rules from the recommendation_rules table first.
 const RULES: Rule[] = [
   { addon: "finance-automation-lab", triggers: ["departments:finance"], why: "this lab covers invoices, reconciliation and monthly reporting with AI help." },
   { addon: "customer-service-playbook", triggers: ["departments:customer_service"], why: "this playbook covers reply drafting, case summaries and consistent answers." },
@@ -29,16 +30,18 @@ export type RecommendInput = {
   labels: Map<string, string>; // "question_key:option_key" -> label
   taskKeys: string[]; // option keys from repetitive_tasks
   addons: AddonRef[];
+  rules?: Rule[]; // rules loaded from the recommendation_rules table (falls back to RULES above)
 };
 
 export function recommend(input: RecommendInput) {
-  const { orgName, industry, deptNames, keys, labels, taskKeys, addons } = input;
+  const { orgName, industry, deptNames, keys, labels, taskKeys, addons, rules } = input;
 
   const addonRecs: { addon_id: string; rationale: string }[] = [];
-  for (const rule of RULES) {
+  for (const rule of rules ?? RULES) {
     const hit = rule.triggers.find((t) => keys.has(t));
     const addon = addons.find((a) => a.slug === rule.addon);
     if (!hit || !addon) continue;
+    if (addonRecs.some((r) => r.addon_id === addon.id)) continue; // skip duplicate add-ons
     const label = labels.get(hit) ?? hit;
     addonRecs.push({ addon_id: addon.id, rationale: `Because you chose “${label}”, ${rule.why}` });
   }

@@ -9,8 +9,9 @@ import type { Addon, Pkg } from "@/lib/types";
 type Step = "plans" | "addons" | "summary" | "payment" | "done";
 type Props = {
   assessmentId: string; status: string; orgName: string; summary: string;
-  items: { title: string; rationale: string; priority: string }[];
+  items: { title: string; rationale: string; priority: string; module_name?: string | null }[];
   recAddons: { addon_id: string; rationale: string }[];
+  suggestedPackageId: string | null;
   packages: Pkg[]; addons: Addon[];
   initialPackageId: string | null; initialPayment: string | null; initialAddonIds: string[];
 };
@@ -26,13 +27,17 @@ const LABELS: Record<string, string> = { plans: "Package", addons: "Add-ons", su
 export default function Checkout(p: Props) {
   const supabase = createClient();
   const [step, setStep] = useState<Step>(p.status === "draft" ? "plans" : "done");
-  const [pkgId, setPkgId] = useState<string | null>(p.initialPackageId);
+  // Start on the package the system suggests, unless the client already chose one
+  const [pkgId, setPkgId] = useState<string | null>(p.initialPackageId ?? p.suggestedPackageId);
   const [addonIds, setAddonIds] = useState<string[]>(p.initialAddonIds);
   const [pay, setPay] = useState<string | null>(p.initialPayment);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const pkg = p.packages.find((x) => x.id === pkgId) ?? null;
+  const suggestedPkg = p.packages.find((x) => x.id === p.suggestedPackageId) ?? null;
+  const fitItem = p.items.find((i) => i.module_name === "package_fit");
+  const otherItems = p.items.filter((i) => i.module_name !== "package_fit");
   const chosenAddons = p.addons.filter((a) => addonIds.includes(a.id));
   const reasonFor = (id: string) => p.recAddons.find((r) => r.addon_id === id)?.rationale;
   const suggested = p.addons.filter((a) => p.recAddons.some((r) => r.addon_id === a.id));
@@ -120,9 +125,9 @@ export default function Checkout(p: Props) {
         <>
           <h1 className="font-display text-4xl font-extrabold sm:text-5xl">Choose your <span className="pop">package</span></h1>
           {p.summary && <p className="mt-4 max-w-3xl rounded-2xl bg-white p-5 text-ink/75 shadow-tile">{p.summary}</p>}
-          {p.items.length > 0 && (
+          {otherItems.length > 0 && (
             <div className="mt-4 grid gap-3 md:grid-cols-2">
-              {p.items.slice(0, 4).map((i) => (
+              {otherItems.slice(0, 4).map((i) => (
                 <div key={i.title} className="rounded-2xl bg-white p-4 shadow-tile">
                   <p className="font-bold">{i.title} {i.priority === "high" && <span className="chip ml-1 bg-pink-soft text-pink">Priority</span>}</p>
                   <p className="mt-1 text-sm text-ink/65">{i.rationale}</p>
@@ -130,13 +135,21 @@ export default function Checkout(p: Props) {
               ))}
             </div>
           )}
-          <p className="mt-8 text-sm text-ink/55">You choose the package. The system never picks one for you. Prices are examples while the program is finalized.</p>
+          {suggestedPkg && (
+            <div className="mt-6 max-w-3xl rounded-2xl border-2 border-mint bg-mint-soft p-5">
+              <p className="font-bold">We recommend {suggestedPkg.name} for {p.orgName}</p>
+              {fitItem && <p className="mt-1 text-sm text-ink/75">{fitItem.rationale}</p>}
+              <p className="mt-2 text-sm text-ink/60">This is a starting point. Pick any package you like and a consultant will review it.</p>
+            </div>
+          )}
+          <p className="mt-4 text-sm text-ink/55">We suggest a package from your answers, but you choose. Prices are examples while the program is finalized.</p>
           <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {p.packages.map((x) => {
               const sel = x.id === pkgId;
               return (
                 <div key={x.id} className={`relative flex flex-col rounded-3xl p-6 transition ${sel ? "bg-brand text-white shadow-lift" : "bg-white shadow-tile"}`}>
                   {x.slug === "gold" && <span className="chip absolute -top-3 right-5 bg-sun text-ink">Most popular</span>}
+                  {x.id === p.suggestedPackageId && <span className="chip absolute -top-3 left-5 bg-mint text-white">Recommended for you</span>}
                   <h2 className="font-display text-2xl font-extrabold">{x.name}</h2>
                   <p className={`text-sm ${sel ? "text-white/75" : "text-ink/60"}`}>{x.tagline}</p>
                   <p className="mt-4 font-display text-3xl font-extrabold">{priceLabel(x)}</p>

@@ -18,7 +18,7 @@ export default async function AssessmentFlow({ params }: { params: { id: string 
   if (!assessment) notFound();
 
   const [{ data: rec }, { data: packages }, { data: addons }, { data: choice }, { data: chosenAddons }] = await Promise.all([
-    supabase.from("recommendations").select("id,client_summary,recommendation_items(title,rationale,priority,sequence_order),recommendation_addons(addon_id,rationale)").eq("assessment_id", id).maybeSingle(),
+    supabase.from("recommendations").select("id,client_summary,suggested_package_id,recommendation_items(title,rationale,priority,module_name,sequence_order),recommendation_addons(addon_id,rationale)").eq("assessment_id", id).maybeSingle(),
     supabase.from("packages").select("*").eq("active", true).order("display_order"),
     supabase.from("addons").select("*").eq("active", true).order("category").order("name"),
     supabase.from("assessment_package_choices").select("package_id,payment_preference").eq("assessment_id", id).maybeSingle(),
@@ -34,6 +34,7 @@ export default async function AssessmentFlow({ params }: { params: { id: string 
       summary={rec?.client_summary ?? ""}
       items={(rec?.recommendation_items ?? []).sort((a, b) => a.sequence_order - b.sequence_order)}
       recAddons={rec?.recommendation_addons ?? []}
+      suggestedPackageId={rec?.suggested_package_id ?? null}
       packages={(packages ?? []) as Pkg[]}
       addons={(addons ?? []) as Addon[]}
       initialPackageId={choice?.package_id ?? null}

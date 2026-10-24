@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { recommend } from "@/lib/recommend";
+import { suggestPackage, type FitRule } from "@/lib/packageFit";
 import OptionTile from "@/components/OptionTile";
 import type { AnswerMap, Department, Pick, Question } from "@/lib/types";
 
@@ -155,23 +156,41 @@ export default function Wizard({ questions, departments }: { questions: Question
       const { error: e4 } = await supabase.from("assessment_answers").insert(answerRows);
       if (e4) throw e4;
 
-      // Rule-based draft recommendation
-      const { data: addons } = await supabase.from("addons").select("id,slug,name").eq("active", true);
+      // Rule-based draft recommendation (rules come from the database)
+      const [{ data: addons }, { data: ruleRows }, { data: fitRows }, { data: pkgs }] = await Promise.all([
+        supabase.from("addons").select("id,slug,name").eq("active", true),
+        supabase.from("recommendation_rules").select("addon_slug,match_any,rationale").eq("active", true).not("addon_slug", "is", null),
+        supabase.from("package_fit_rules").select("*").eq("active", true),
+        supabase.from("packages").select("id,slug,name,display_order").eq("active", true),
+      ]);
       const labels = new Map<string, string>();
       shown.forEach((q) => q.question_options.forEach((o) => labels.set(`${q.question_key}:${o.option_key}`, o.label)));
       departments.forEach((d) => labels.set(`departments:${d.slug}`, d.name));
       const deptNames = deps.selected.map((id) => departments.find((d) => d.id === id)!).filter((d) => !d.is_other).map((d) => d.name);
       if (deps.other.trim() && departments.find((d) => d.is_other && deps.selected.includes(d.id))) deptNames.push(deps.other.trim());
 
+      const dbRules = (ruleRows ?? []).map((r) => ({ addon: r.addon_slug as string, triggers: r.match_any as string[], why: r.rationale as string }));
       const rec = recommend({
         orgName: name.trim(), industry: pickLabel("industry"), deptNames, keys,
         labels, taskKeys: answers.repetitive_tasks?.selected ?? [], addons: addons ?? [],
+        rules: dbRules.length ? dbRules : undefined,
       });
+      const fit = suggestPackage((fitRows ?? []) as FitRule[], keys, deps.selected.length, pkgs ?? []);
+
       const { data: r, error: e5 } = await supabase.from("recommendations")
-        .insert({ assessment_id: asm.id, client_summary: rec.client_summary, status: "draft" }).select("id").single();
+        .insert({ assessment_id: asm.id, client_summary: rec.client_summary, status: "draft", suggested_package_id: fit?.pkg.id ?? null })
+        .select("id").single();
       if (e5) throw e5;
-      if (rec.items.length) {
-        const { error } = await supabase.from("recommendation_items").insert(rec.items.map((i) => ({ ...i, recommendation_id: r.id })));
+
+      const itemRows: Record<string, unknown>[] = rec.items.map((i) => ({ ...i, recommendation_id: r.id }));
+      if (fit) {
+        itemRows.push({
+          recommendation_id: r.id, title: `Suggested package: ${fit.pkg.name}`, rationale: fit.reasons.join(" "),
+          priority: "high", sequence_order: 0, module_name: "package_fit",
+        });
+      }
+      if (itemRows.length) {
+        const { error } = await supabase.from("recommendation_items").insert(itemRows);
         if (error) throw error;
       }
       if (rec.addonRecs.length) {
