@@ -1,7 +1,8 @@
 "use client";
 // Shown on the "Sent to a consultant" screen: 1) deposit (Stripe), 2) book a meeting (Google Calendar + Google Maps).
+// Meeting times stay locked until the deposit is paid.
 import { useEffect, useState } from "react";
-import { CalendarDays, CreditCard, MapPin, Video } from "lucide-react";
+import { CalendarDays, CreditCard, Lock, MapPin, Video } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
@@ -9,9 +10,12 @@ type ApiError = { service: string; code: string; userMessage: string };
 type Booking = { startsAt: string; meetLink: string | null; type: "video" | "in_person" };
 type Trip = { minutes: number; km: number };
 
-const fmt = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(iso).toLocaleString("en-CA", { timeZone: "America/Edmonton", ...opts });
+const TZ = "America/Edmonton";
+const fmt = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(iso).toLocaleString("en-CA", { timeZone: TZ, ...opts });
 const dayLabel = (iso: string) => fmt(iso, { weekday: "short", month: "short", day: "numeric" });
 const timeLabel = (iso: string) => fmt(iso, { hour: "numeric", minute: "2-digit" });
+const dayKey = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD in Calgary
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 async function call<T>(url: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: ApiError }> {
   try {
@@ -28,6 +32,8 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
   const supabase = createClient();
   // deposit
   const [deposit, setDeposit] = useState<"none" | "demo" | "paid">("none");
+  const [depositLoaded, setDepositLoaded] = useState(false);
+  const [emailSent, setEmailSent] = useState<boolean | null>(null);
   const [demoOpen, setDemoOpen] = useState(false);
   const [depositErr, setDepositErr] = useState<ApiError | null>(null);
   const [depositBusy, setDepositBusy] = useState(false);
@@ -35,6 +41,7 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
   const [type, setType] = useState<"video" | "in_person">("video");
   const [slots, setSlots] = useState<string[] | null>(null);
   const [slotsErr, setSlotsErr] = useState<ApiError | null>(null);
+  const [pickedDay, setPickedDay] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [booking, setBooking] = useState<Booking | null>(null);
   const [bookErr, setBookErr] = useState<ApiError | null>(null);
@@ -48,9 +55,10 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
   useEffect(() => {
     (async () => {
       const c = await supabase.from("assessment_package_choices").select("deposit_status").eq("assessment_id", assessmentId).maybeSingle();
-      if (c.data?.deposit_status) setDeposit(c.data.deposit_status as "none" | "demo" | "paid");
+      if (c.data?.deposit_status && c.data.deposit_status !== "none") setDeposit(c.data.deposit_status as "none" | "demo" | "paid");
       const b = await supabase.from("consultations").select("starts_at,meet_link,meeting_type").eq("assessment_id", assessmentId).maybeSingle();
       if (b.data) setBooking({ startsAt: b.data.starts_at, meetLink: b.data.meet_link, type: b.data.meeting_type });
+      setDepositLoaded(true);
     })();
     // Back from Stripe: confirm the payment, then clean the address bar
     const q = new URLSearchParams(window.location.search);
@@ -58,13 +66,18 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
       confirmDeposit(q.get("session_id")!);
       window.history.replaceState(null, "", window.location.pathname);
     }
-    loadSlots();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assessmentId]);
 
+  // Only ask for the consultant's open times once the deposit is paid.
+  useEffect(() => {
+    if (deposit !== "none" && !booking && slots === null) loadSlots();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deposit, booking]);
+
   async function loadSlots() {
     setSlotsErr(null);
-    const r = await call<{ slots: string[] }>("/api/calendar/slots");
+    const r = await call<{ slots: string[] }>(`/api/calendar/slots?assessmentId=${encodeURIComponent(assessmentId)}`);
     if (r.ok) setSlots(r.data.slots); else { setSlots([]); setSlotsErr(r.error); }
   }
 
@@ -77,9 +90,9 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
     else setDemoOpen(true);
   }
   async function confirmDeposit(sessionId?: string) {
-    const r = await call<{ status: "paid" | "demo" }>("/api/stripe/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assessmentId, sessionId }) });
+    const r = await call<{ status: "paid" | "demo"; emailSent: boolean | null }>("/api/stripe/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assessmentId, sessionId }) });
     if (!r.ok) return setDepositErr(r.error);
-    setDeposit(r.data.status); setDemoOpen(false);
+    setDeposit(r.data.status); setEmailSent(r.data.emailSent); setDemoOpen(false); setDepositLoaded(true);
   }
 
   async function checkTrip() {
@@ -98,17 +111,27 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
     else { setBookErr(r.error); if (r.error.code === "slot_taken") { setPicked(null); loadSlots(); } }
   }
 
-  const byDay = (slots ?? []).reduce<Record<string, string[]>>((acc, s) => { (acc[dayLabel(s)] ||= []).push(s); return acc; }, {});
+  // ---- calendar: the next 14 days, Monday first, weekends greyed out ----
+  const slotsByDay = (slots ?? []).reduce<Record<string, string[]>>((acc, s) => { (acc[dayKey(s)] ||= []).push(s); return acc; }, {});
+  const [ty, tm, td] = dayKey(new Date().toISOString()).split("-").map(Number);
+  const days = Array.from({ length: 14 }, (_, i) => new Date(Date.UTC(ty, tm - 1, td + 1 + i)));
+  const lead = (days[0].getUTCDay() + 6) % 7; // empty cells so the first day lands under the right weekday
+  const cells: (Date | null)[] = [...Array(lead).fill(null), ...days];
+  const rangeLabel = `${days[0].toLocaleDateString("en-CA", { timeZone: "UTC", month: "short", day: "numeric" })} to ${days[13].toLocaleDateString("en-CA", { timeZone: "UTC", month: "short", day: "numeric" })}`;
   const officeLink = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(address || "")}&destination=${encodeURIComponent("Calgary, AB")}&travelmode=transit`;
+  const unlocked = deposit !== "none";
 
   return (
     <div className="mt-10 space-y-6 text-left">
       {/* ===== 1. DEPOSIT (Stripe) ===== */}
       <section className="panel p-6">
         <div className="flex items-center gap-3"><CreditCard className="text-brand" /><h2 className="font-display text-2xl font-extrabold">Step 1: Hold your consultation with a deposit</h2></div>
-        <p className="mt-2 text-ink/70">A <b>$100 deposit</b> holds a meeting time with your consultant. It comes off your final price. <span className="text-ink/50">(Placeholder amount while Stripe is being connected.)</span></p>
+        <p className="mt-2 text-ink/70">A <b>$100 deposit</b> unlocks meeting times with your consultant. It counts toward your total once we start working together.</p>
         {deposit !== "none" ? (
-          <p className="mt-4 rounded-xl bg-mint-soft p-3 text-sm font-semibold">✓ Deposit received. We emailed you a confirmation{deposit === "demo" ? " (demo mode, no card was charged)" : ""}.</p>
+          <p className="mt-4 rounded-xl bg-mint-soft p-3 text-sm font-semibold">
+            ✓ Deposit received{deposit === "demo" ? " (demo mode, no card was charged)" : ""}.
+            {emailSent === true ? " We emailed you the receipt and your total." : emailSent === false ? " We could not send the email, but your receipt is on your dashboard." : " Your receipt is on your dashboard."}
+          </p>
         ) : demoOpen ? (
           <div className="mt-4 rounded-2xl border-2 border-dashed border-brand/40 bg-brand-soft p-5">
             <p className="font-bold">Demo checkout (Stripe is not connected yet)</p>
@@ -119,12 +142,13 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
             </div>
           </div>
         ) : (
-          <button type="button" className="btn btn-primary mt-4" disabled={depositBusy} onClick={startDeposit}>{depositBusy ? "One moment…" : "Pay $100 deposit"}</button>
+          <button type="button" className="btn btn-primary mt-4" disabled={depositBusy || !depositLoaded} onClick={startDeposit}>{depositBusy ? "One moment…" : "Pay $100 deposit"}</button>
         )}
         {depositErr && (
           <div role="alert" className="mt-4 rounded-xl bg-pink-soft p-3 text-sm text-pink">
             <p className="font-semibold">{depositErr.userMessage}</p>
-            <p className="mt-1 text-ink/70">You can keep going and book a time below. The consultant can send an invoice instead.</p>
+            <p className="mt-1 text-ink/70">Nothing was charged. You can{" "}
+              <Link className="font-bold underline" href={`/dashboard/${assessmentId}`}>message the consultant</Link> and they can send an invoice instead.</p>
           </div>
         )}
       </section>
@@ -138,7 +162,14 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
             <p className="font-bold">You are booked ✓</p>
             <p className="mt-1">{dayLabel(booking.startsAt)} at {timeLabel(booking.startsAt)} (Calgary time)</p>
             {booking.type === "video" && booking.meetLink && <p className="mt-2"><a className="font-bold text-brand underline" href={booking.meetLink} target="_blank" rel="noreferrer">Open the Google Meet link</a></p>}
-            <p className="mt-2 text-sm text-ink/65">A Google Calendar invite was sent to your email, so it shows up in your own calendar too.</p>
+            <p className="mt-2 text-sm text-ink/65">We emailed you the details and a Google Calendar invite. You can also see this meeting on <Link className="font-bold underline" href={`/dashboard/${assessmentId}`}>your page</Link>.</p>
+          </div>
+        ) : !depositLoaded ? (
+          <p className="mt-4 text-sm text-ink/60">Loading…</p>
+        ) : !unlocked ? (
+          <div className="mt-4 flex items-center gap-3 rounded-2xl border-2 border-dashed border-ink/15 bg-ink/5 p-5 text-ink/60">
+            <Lock size={20} className="shrink-0" />
+            <p className="font-semibold">Pay the $100 deposit in Step 1 to unlock meeting times.</p>
           </div>
         ) : (
           <>
@@ -172,7 +203,7 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
               </div>
             )}
 
-            <h3 className="mt-6 font-bold">Open times (Calgary time)</h3>
+            <h3 className="mt-6 font-bold">Pick a day <span className="font-normal text-ink/50">({rangeLabel}, Calgary time)</span></h3>
             {slots === null && <p className="mt-2 text-sm text-ink/60">Loading the consultant's calendar…</p>}
             {slotsErr && (
               <div role="alert" className="mt-2 rounded-xl bg-pink-soft p-3 text-sm text-pink">
@@ -183,22 +214,48 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
                 </div>
               </div>
             )}
-            <div className="mt-2 space-y-3">
-              {Object.entries(byDay).map(([day, list]) => (
-                <div key={day}>
-                  <p className="text-sm font-bold text-ink/60">{day}</p>
-                  <div className="mt-1 flex flex-wrap gap-2">
-                    {list.map((s) => (
-                      <button key={s} type="button" aria-pressed={picked === s} onClick={() => setPicked(s)}
-                        className={`rounded-full border-2 px-3 py-1 text-sm font-bold transition ${picked === s ? "border-brand bg-brand text-white" : "border-ink/10 bg-white hover:border-brand/40"}`}>{timeLabel(s)}</button>
-                    ))}
-                  </div>
+
+            {slots !== null && !slotsErr && (
+              <div className="mt-3 max-w-md">
+                <div className="grid grid-cols-7 gap-1.5 text-center text-xs font-bold text-ink/50">
+                  {WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
                 </div>
-              ))}
-            </div>
+                <div className="mt-1.5 grid grid-cols-7 gap-1.5">
+                  {cells.map((d, i) => {
+                    if (!d) return <div key={`e${i}`} />;
+                    const key = d.toISOString().slice(0, 10);
+                    const weekend = d.getUTCDay() === 0 || d.getUTCDay() === 6;
+                    const open = (slotsByDay[key]?.length ?? 0) > 0;
+                    const sel = pickedDay === key;
+                    return (
+                      <button key={key} type="button" disabled={!open} aria-pressed={sel}
+                        onClick={() => { setPickedDay(key); setPicked(null); }}
+                        title={weekend ? "Closed on weekends" : open ? "Open times" : "No open times"}
+                        className={`aspect-square rounded-xl border-2 text-sm font-bold transition ${sel ? "border-brand bg-brand text-white" : open ? "border-ink/10 bg-white hover:border-brand/40" : weekend ? "border-transparent bg-ink/5 text-ink/25" : "border-transparent bg-ink/5 text-ink/30 line-through"}`}>
+                        {d.getUTCDate()}
+                      </button>
+                    );
+                  })}
+                </div>
+                {Object.keys(slotsByDay).length === 0 && <p className="mt-3 text-sm text-ink/60">No open times in the next two weeks. Message the consultant to arrange one.</p>}
+              </div>
+            )}
+
+            {pickedDay && slotsByDay[pickedDay] && (
+              <div className="mt-5">
+                <p className="text-sm font-bold text-ink/60">Open times on {dayLabel(slotsByDay[pickedDay][0])}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {slotsByDay[pickedDay].map((s) => (
+                    <button key={s} type="button" aria-pressed={picked === s} onClick={() => setPicked(s)}
+                      className={`rounded-full border-2 px-3 py-1 text-sm font-bold transition ${picked === s ? "border-brand bg-brand text-white" : "border-ink/10 bg-white hover:border-brand/40"}`}>{timeLabel(s)}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {bookErr && <p role="alert" className="mt-4 rounded-xl bg-pink-soft p-3 text-sm font-semibold text-pink">{bookErr.userMessage}</p>}
             <button type="button" className="btn btn-primary mt-5" disabled={!picked || bookBusy || (type === "in_person" && !address.trim())} onClick={book}>
-              {bookBusy ? "Booking…" : picked ? `Book ${dayLabel(picked)} at ${timeLabel(picked)}` : "Pick a time"}
+              {bookBusy ? "Booking…" : picked ? `Book ${dayLabel(picked)} at ${timeLabel(picked)}` : pickedDay ? "Pick a time" : "Pick a day"}
             </button>
           </>
         )}

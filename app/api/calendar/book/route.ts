@@ -1,6 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { createEvent, freeSlots, getBusy, GoogleError, SLOT_MINUTES } from "@/lib/googleCalendar";
 import { failJson, logIntegration } from "@/lib/integrationLog";
+import { sendEmail } from "@/lib/email";
+import { getQuote } from "@/lib/quote";
+import { bookingEmail } from "@/lib/emailTemplates";
 
 export async function POST(req: Request) {
   const supabase = createClient();
@@ -14,6 +17,10 @@ export async function POST(req: Request) {
   const { data: a } = await supabase.from("assessments").select("id,organizations(name)").eq("id", assessmentId).maybeSingle();
   if (!a) return failJson("app", "not_found", "We could not find that assessment.", 404);
   const org = Array.isArray(a.organizations) ? a.organizations[0] : a.organizations;
+
+  // Booking is locked until the $100 deposit is paid (checked here too, not only in the page).
+  const { data: choice } = await supabase.from("assessment_package_choices").select("deposit_status").eq("assessment_id", assessmentId).maybeSingle();
+  if (!choice || choice.deposit_status === "none") return failJson("app", "deposit_required", "Pay the $100 deposit first to book a time.", 402);
   const startMs = Date.parse(startISO);
   if (Number.isNaN(startMs) || startMs < Date.now()) return failJson("app", "bad_time", "Pick a time in the future.", 400);
   const endMs = startMs + SLOT_MINUTES * 60000;
@@ -34,6 +41,14 @@ export async function POST(req: Request) {
     if (error) throw new GoogleError("db_error", error.message, 500);
 
     logIntegration({ service: "google_calendar", action: "events.insert", ok: true, assessmentId });
+
+    // Booking email with the meeting details and the total. If this fails the booking still stands.
+    const quote = await getQuote(supabase, assessmentId);
+    if (quote) {
+      const when = new Date(startMs).toLocaleString("en-CA", { timeZone: "America/Edmonton", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+      const mail = bookingEmail(quote, { when, type, meetLink: ev.meetLink, address, dashboardUrl: `${new URL(req.url).origin}/dashboard/${assessmentId}` });
+      await sendEmail({ to: user.email ?? "", assessmentId, subject: mail.subject, html: mail.html });
+    }
     return Response.json({ ok: true, startsAt: new Date(startMs).toISOString(), meetLink: ev.meetLink });
   } catch (e) {
     const err = e instanceof GoogleError ? e : new GoogleError("unknown", (e as Error).message);

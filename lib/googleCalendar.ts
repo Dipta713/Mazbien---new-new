@@ -86,12 +86,12 @@ function calgaryToday() {
   return { y: +p.year, m: +p.month, d: +p.day };
 }
 
-/** Every 30-minute start time on the next 5 weekdays, 9am to 5pm Calgary time. */
+/** Every 30-minute start time on weekdays in the next 14 days, 9am to 5pm Calgary time. */
 export function candidateSlots(): { start: number; end: number }[] {
   const t = calgaryToday();
   const out: { start: number; end: number }[] = [];
   let days = 0;
-  for (let i = 1; i <= 14 && days < 5; i++) {
+  for (let i = 1; i <= 14; i++) {
     const day = new Date(Date.UTC(t.y, t.m - 1, t.d + i));
     const dow = day.getUTCDay();
     if (dow === 0 || dow === 6) continue;

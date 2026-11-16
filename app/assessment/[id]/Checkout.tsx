@@ -7,23 +7,17 @@ import { money, priceLabel } from "@/lib/format";
 import NextSteps from "./NextSteps";
 import type { Addon, Pkg } from "@/lib/types";
 
-type Step = "plans" | "addons" | "summary" | "payment" | "done";
+type Step = "plans" | "addons" | "summary" | "done";
 type Props = {
   assessmentId: string; status: string; orgName: string; summary: string;
   items: { title: string; rationale: string; priority: string; module_name?: string | null }[];
   recAddons: { addon_id: string; rationale: string }[];
   suggestedPackageId: string | null;
   packages: Pkg[]; addons: Addon[];
-  initialPackageId: string | null; initialPayment: string | null; initialAddonIds: string[];
+  initialPackageId: string | null; initialAddonIds: string[];
 };
 
-const PAY = [
-  { key: "invoice", label: "Invoice", note: "We send an invoice after the consultant approves." },
-  { key: "card_on_consultation", label: "Credit card on consultation", note: "Pay by card once we have talked it through." },
-  { key: "pay_later", label: "Pay later / instalments", note: "Split the cost into smaller payments." },
-  { key: "not_sure", label: "Not sure yet", note: "Decide with the consultant." },
-];
-const LABELS: Record<string, string> = { plans: "Package", addons: "Add-ons", summary: "Review", payment: "Payment" };
+const LABELS: Record<string, string> = { plans: "Package", addons: "Add-ons", summary: "Review" };
 
 export default function Checkout(p: Props) {
   const supabase = createClient();
@@ -31,7 +25,6 @@ export default function Checkout(p: Props) {
   // Start on the package the system suggests, unless the client already chose one
   const [pkgId, setPkgId] = useState<string | null>(p.initialPackageId ?? p.suggestedPackageId);
   const [addonIds, setAddonIds] = useState<string[]>(p.initialAddonIds);
-  const [pay, setPay] = useState<string | null>(p.initialPayment);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -70,10 +63,7 @@ export default function Checkout(p: Props) {
     go("summary");
   }
   async function submit() {
-    if (!pay) return setError("Pick how you would like to pay. You can change it later.");
     setBusy(true);
-    const a = await supabase.from("assessment_package_choices").update({ payment_preference: pay }).eq("assessment_id", p.assessmentId);
-    if (a.error) return fail(a.error);
     const b = await supabase.from("assessments").update({ status: "submitted", submitted_at: new Date().toISOString() }).eq("id", p.assessmentId);
     if (b.error) return fail(b.error);
     setBusy(false);
@@ -102,7 +92,7 @@ export default function Checkout(p: Props) {
       <div className="section max-w-2xl py-20 text-center">
         <div className="mx-auto grid h-20 w-20 place-items-center rounded-full bg-mint text-white"><PartyPopper size={36} /></div>
         <h1 className="mt-6 font-display text-4xl font-extrabold sm:text-5xl">Sent to a Mazbien <span className="mark">consultant</span></h1>
-        <p className="mt-4 text-lg text-ink/70">Thanks, {p.orgName}. A consultant will review your package and add-ons, adjust anything that does not fit, and get back to you. <b>Nothing has been billed.</b></p>
+        <p className="mt-4 text-lg text-ink/70">Thanks, {p.orgName}. A consultant will review your package and add-ons, adjust anything that does not fit, and get back to you. <b>Nothing has been billed yet.</b> To hold a meeting time, pay the $100 deposit below. It counts toward your total once we start working together.</p>
         <NextSteps assessmentId={p.assessmentId} />
         <div className="mt-8 flex justify-center gap-3">
           <Link href="/dashboard" className="btn btn-primary">See my assessments</Link>
@@ -112,7 +102,7 @@ export default function Checkout(p: Props) {
     );
   }
 
-  const order: Step[] = ["plans", "addons", "summary", "payment"];
+  const order: Step[] = ["plans", "addons", "summary"];
   return (
     <div className="section py-10">
       <ol className="mb-8 flex flex-wrap gap-2 text-sm font-bold" aria-label="Progress">
@@ -203,33 +193,19 @@ export default function Checkout(p: Props) {
               <p className="font-display text-3xl font-extrabold">{total !== null ? money(total) : `Custom quote${addonTotal ? ` + ${money(addonTotal)} add-ons` : ""}`}</p>
             </div>
           </div>
-          <p className="mt-3 text-sm text-ink/55">Prices are placeholders. A consultant confirms the final price. Nothing is charged here.</p>
+          <p className="mt-3 text-sm text-ink/55">Prices are placeholders. A consultant confirms the final price. Nothing is charged here. After you send this, you can hold a meeting time with a $100 deposit, which counts toward your total once we start.</p>
         </>
       )}
 
-      {step === "payment" && (
-        <>
-          <h1 className="font-display text-4xl font-extrabold sm:text-5xl">How would you like to <span className="mark">pay</span>?</h1>
-          <p className="mt-3 max-w-2xl text-ink/70">This only tells us your preference. <b>No card details are collected here.</b> After you send this, you can hold a meeting time with a $100 deposit.</p>
-          <div className="mt-8 grid gap-3 sm:grid-cols-2">
-            {PAY.map((o) => (
-              <button key={o.key} type="button" aria-pressed={pay === o.key} onClick={() => setPay(o.key)}
-                className={`rounded-2xl border-2 p-5 text-left transition ${pay === o.key ? "border-brand bg-brand-soft shadow-tile" : "border-ink/10 bg-white hover:border-brand/40"}`}>
-                <p className="font-bold">{o.label}</p><p className="mt-1 text-sm text-ink/65">{o.note}</p>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
 
       {error && <p role="alert" className="mt-6 rounded-xl bg-pink-soft p-3 text-sm font-semibold text-pink">{error}</p>}
 
       <div className="mt-10 flex items-center justify-between">
         <button type="button" disabled={step === "plans" || busy} onClick={() => go(order[order.indexOf(step) - 1])} className="btn btn-ghost"><ArrowLeft size={18} /> Back</button>
-        {step !== "payment" ? (
+        {step !== "summary" ? (
           <button type="button" disabled={busy} className="btn btn-primary"
-            onClick={() => step === "plans" ? savePackage() : step === "addons" ? saveAddons() : go("payment")}>
-            {step === "addons" ? "Review my choices" : step === "summary" ? "Choose payment preference" : "Continue"} <ArrowRight size={18} />
+            onClick={() => (step === "plans" ? savePackage() : saveAddons())}>
+            {step === "addons" ? "Review my choices" : "Continue"} <ArrowRight size={18} />
           </button>
         ) : (
           <button type="button" disabled={busy} onClick={submit} className="btn btn-primary">{busy ? "Sending…" : "Send for review"}</button>

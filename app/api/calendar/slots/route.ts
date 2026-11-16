@@ -2,10 +2,15 @@ import { createClient } from "@/lib/supabase/server";
 import { candidateSlots, freeSlots, getBusy, GoogleError } from "@/lib/googleCalendar";
 import { failJson, logIntegration } from "@/lib/integrationLog";
 
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return failJson("app", "unauthorized", "Please sign in again.", 401);
+
+  // Times stay locked until the $100 deposit is paid.
+  const assessmentId = new URL(req.url).searchParams.get("assessmentId") ?? "";
+  const { data: choice } = await supabase.from("assessment_package_choices").select("deposit_status").eq("assessment_id", assessmentId).maybeSingle();
+  if (!choice || choice.deposit_status === "none") return failJson("app", "deposit_required", "Pay the $100 deposit to unlock meeting times.", 402);
 
   try {
     const all = candidateSlots();
