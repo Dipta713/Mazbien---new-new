@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 
 type ApiError = { service: string; code: string; userMessage: string };
 type Booking = { startsAt: string; meetLink: string | null; type: "video" | "in_person" };
-type Trip = { minutes: number; km: number };
+type Trip = { minutes: number; km: number; mode?: "transit" | "drive" };
 
 const TZ = "America/Edmonton";
 const fmt = (iso: string, opts: Intl.DateTimeFormatOptions) => new Date(iso).toLocaleString("en-CA", { timeZone: TZ, ...opts });
@@ -47,6 +47,7 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
   const [booking, setBooking] = useState<Booking | null>(null);
   const [bookErr, setBookErr] = useState<ApiError | null>(null);
   const [bookBusy, setBookBusy] = useState(false);
+  const [bookEmailSent, setBookEmailSent] = useState<boolean | null>(null);
   // maps
   const [address, setAddress] = useState("");
   const [trip, setTrip] = useState<Trip | null>(null);
@@ -106,9 +107,9 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
   async function book() {
     if (!picked) return;
     setBookBusy(true); setBookErr(null);
-    const r = await call<{ startsAt: string; meetLink: string | null }>("/api/calendar/book", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assessmentId, startISO: picked, type, address: type === "in_person" ? address : undefined }) });
+    const r = await call<{ startsAt: string; meetLink: string | null; emailSent: boolean }>("/api/calendar/book", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assessmentId, startISO: picked, type, address: type === "in_person" ? address : undefined }) });
     setBookBusy(false);
-    if (r.ok) setBooking({ startsAt: r.data.startsAt, meetLink: r.data.meetLink, type });
+    if (r.ok) { setBookEmailSent(r.data.emailSent); setBooking({ startsAt: r.data.startsAt, meetLink: r.data.meetLink, type }); }
     else { setBookErr(r.error); if (r.error.code === "slot_taken") { setPicked(null); loadMonth(month); } }
   }
 
@@ -175,7 +176,7 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
             <p className="font-bold">You are booked ✓</p>
             <p className="mt-1">{dayLabel(booking.startsAt)} at {timeLabel(booking.startsAt)} (Calgary time)</p>
             {booking.type === "video" && booking.meetLink && <p className="mt-2"><a className="font-bold text-brand underline" href={booking.meetLink} target="_blank" rel="noreferrer">Open the Google Meet link</a></p>}
-            <p className="mt-2 text-sm text-ink/65">We emailed you the details and a Google Calendar invite. You can also see this meeting on <Link className="font-bold underline" href={`/dashboard/${assessmentId}`}>your page</Link>.</p>
+            <p className="mt-2 text-sm text-ink/65">{bookEmailSent === true ? "We emailed you the details. " : ""}Google also sends a Calendar invite to your email. You can see this meeting any time on <Link className="font-bold underline" href={`/dashboard/${assessmentId}`}>your page</Link>.</p>
           </div>
         ) : !depositLoaded ? (
           <p className="mt-4 text-sm text-ink/60">Loading…</p>
@@ -203,8 +204,8 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
                 <button type="button" className="btn btn-ghost mt-3" disabled={!address.trim() || tripBusy} onClick={checkTrip}>{tripBusy ? "Checking…" : "How far is it? Can I take the bus?"}</button>
                 {trip && (
                   <div className="mt-3 rounded-xl bg-white p-4 shadow-tile">
-                    <p className="font-bold">About {trip.minutes} min by transit ({trip.km} km)</p>
-                    <p className="text-sm text-ink/70">This is an estimate. <a className="font-bold text-brand underline" href={officeLink} target="_blank" rel="noreferrer">See bus times in Google Maps</a></p>
+                    <p className="font-bold">About {trip.minutes} min {trip.mode === "drive" ? "driving" : "by transit"} ({trip.km} km)</p>
+                    <p className="text-sm text-ink/70">This is an estimate.{trip.mode === "drive" ? " We could not work out bus times, so this is a driving time." : ""} <a className="font-bold text-brand underline" href={officeLink} target="_blank" rel="noreferrer">See bus times in Google Maps</a></p>
                   </div>
                 )}
                 {tripErr && (

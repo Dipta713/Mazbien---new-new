@@ -5,7 +5,7 @@ import { failJson, logIntegration } from "@/lib/integrationLog";
 const BASE = "https://api.geoapify.com/v1";
 
 async function geocode(text: string, key: string): Promise<[number, number]> {
-  const res = await fetch(`${BASE}/geocode/search?text=${encodeURIComponent(text)}&filter=countrycode:ca&limit=1&format=json&apiKey=${key}`);
+  const res = await fetch(`${BASE}/geocode/search?text=${encodeURIComponent(text)}&filter=countrycode:ca&limit=1&format=json&bias=proximity:-114.0719,51.0447&apiKey=${key}`);
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(json.message ?? "geocode failed"), { status: res.status, code: json.error ?? "geocode_error" });
   const r = json.results?.[0];
@@ -26,18 +26,32 @@ export async function POST(req: Request) {
     const key = process.env.GEOAPIFY_API_KEY;
     if (!key) throw Object.assign(new Error("GEOAPIFY_API_KEY is missing in .env.local"), { status: 503, code: "not_configured" });
     const [from, to] = await Promise.all([geocode(origin, key), geocode(destination, key)]);
-    const res = await fetch(`${BASE}/routing?waypoints=${from[0]},${from[1]}|${to[0]},${to[1]}&mode=approximated_transit&apiKey=${key}`);
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error(json.message ?? "routing failed"), { status: res.status, code: json.error ?? "routing_error" });
+    // Try bus/train first. If Geoapify finds no transit path, fall back to a driving estimate.
+    const route = async (mode: string) => {
+      const res = await fetch(`${BASE}/routing?waypoints=${from[0]},${from[1]}|${to[0]},${to[1]}&mode=${mode}&apiKey=${key}`);
+      const json = await res.json().catch(() => ({}));
+      return { res, json };
+    };
+    let mode: "transit" | "drive" = "transit";
+    let { res, json } = await route("approximated_transit");
+    if (!res.ok || !json.features?.[0]?.properties) {
+      logIntegration({ service: "google_maps", action: "geoapify.routing", ok: false, status: res.status, detail: `transit failed, trying drive: ${json.message ?? "no route"}` });
+      mode = "drive";
+      ({ res, json } = await route("drive"));
+    }
+    if (!res.ok) {
+      const noPath = String(json.message ?? "").toLowerCase().includes("no path");
+      throw Object.assign(new Error(json.message ?? "routing failed"), { status: res.status, code: noPath ? "no_route" : (json.error ?? "routing_error") });
+    }
     const p = json.features?.[0]?.properties;
-    if (!p) throw Object.assign(new Error("no transit route found"), { status: 404, code: "no_route" });
+    if (!p) throw Object.assign(new Error("no route found"), { status: 404, code: "no_route" });
     logIntegration({ service: "google_maps", action: "geoapify.routing", ok: true });
-    return Response.json({ ok: true, minutes: Math.round(p.time / 60), km: Math.round(p.distance / 100) / 10 });
+    return Response.json({ ok: true, mode, minutes: Math.round(p.time / 60), km: Math.round(p.distance / 100) / 10 });
   } catch (e) {
     const err = e as { message: string; status?: number; code?: string };
     logIntegration({ service: "google_maps", action: "geoapify.routing", ok: false, status: err.status, detail: `${err.code ?? "unknown"}: ${err.message}` });
     const msg = err.code === "no_address" || err.code === "no_route"
-      ? "We could not find a bus or train route from that address. Try a fuller address, or open it in Google Maps below."
+      ? "We could not find a route from that address. Try a fuller address (street, city), or open it in Google Maps below."
       : "We could not work out the trip right now. You can still open the route in Google Maps below.";
     return failJson("maps", err.code ?? "unknown", msg, err.status && err.status < 500 ? err.status : 502);
   }

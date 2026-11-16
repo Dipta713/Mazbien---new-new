@@ -43,13 +43,14 @@ export async function POST(req: Request) {
     logIntegration({ service: "google_calendar", action: "events.insert", ok: true, assessmentId });
 
     // Booking email with the meeting details and the total. If this fails the booking still stands.
+    let emailSent = false;
     const quote = await getQuote(supabase, assessmentId);
     if (quote) {
       const when = new Date(startMs).toLocaleString("en-CA", { timeZone: "America/Edmonton", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
       const mail = bookingEmail(quote, { when, type, meetLink: ev.meetLink, address, dashboardUrl: `${new URL(req.url).origin}/dashboard/${assessmentId}` });
-      await sendEmail({ to: user.email ?? "", assessmentId, subject: mail.subject, html: mail.html });
+      emailSent = await sendEmail({ to: user.email ?? "", assessmentId, subject: mail.subject, html: mail.html });
     }
-    return Response.json({ ok: true, startsAt: new Date(startMs).toISOString(), meetLink: ev.meetLink });
+    return Response.json({ ok: true, startsAt: new Date(startMs).toISOString(), meetLink: ev.meetLink, emailSent });
   } catch (e) {
     const err = e instanceof GoogleError ? e : new GoogleError("unknown", (e as Error).message);
     logIntegration({ service: "google_calendar", action: "events.insert", ok: false, status: err.status, detail: `${err.code}: ${err.message}`, assessmentId });
