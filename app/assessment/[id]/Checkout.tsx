@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowLeft, ArrowRight, Check, PartyPopper } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { money, priceLabel } from "@/lib/format";
+import NextSteps from "./NextSteps";
 import type { Addon, Pkg } from "@/lib/types";
 
 type Step = "plans" | "addons" | "summary" | "payment" | "done";
@@ -102,6 +103,7 @@ export default function Checkout(p: Props) {
         <div className="mx-auto grid h-20 w-20 place-items-center rounded-full bg-mint text-white"><PartyPopper size={36} /></div>
         <h1 className="mt-6 font-display text-4xl font-extrabold sm:text-5xl">Sent to a Mazbien <span className="mark">consultant</span></h1>
         <p className="mt-4 text-lg text-ink/70">Thanks, {p.orgName}. A consultant will review your package and add-ons, adjust anything that does not fit, and get back to you. <b>Nothing has been billed.</b></p>
+        <NextSteps assessmentId={p.assessmentId} />
         <div className="mt-8 flex justify-center gap-3">
           <Link href="/dashboard" className="btn btn-primary">See my assessments</Link>
           <Link href="/" className="btn btn-ghost">Back to home</Link>
@@ -208,7 +210,7 @@ export default function Checkout(p: Props) {
       {step === "payment" && (
         <>
           <h1 className="font-display text-4xl font-extrabold sm:text-5xl">How would you like to <span className="mark">pay</span>?</h1>
-          <p className="mt-3 max-w-2xl text-ink/70">This only tells us your preference. <b>No card details are collected and nothing is charged.</b></p>
+          <p className="mt-3 max-w-2xl text-ink/70">This only tells us your preference. <b>No card details are collected here.</b> After you send this, you can hold a meeting time with a $100 deposit.</p>
           <div className="mt-8 grid gap-3 sm:grid-cols-2">
             {PAY.map((o) => (
               <button key={o.key} type="button" aria-pressed={pay === o.key} onClick={() => setPay(o.key)}
