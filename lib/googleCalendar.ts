@@ -86,16 +86,21 @@ function calgaryToday() {
   return { y: +p.year, m: +p.month, d: +p.day };
 }
 
-/** Every 30-minute start time on weekdays in the next 14 days, 9am to 5pm Calgary time. */
+const MAX_DAYS_AHEAD = 365; // clients can book up to 12 months ahead
+
+/** "YYYY-MM" of a moment, in Calgary time. */
+export function monthOf(ms: number): string {
+  return new Date(ms).toLocaleDateString("en-CA", { timeZone: TZ }).slice(0, 7);
+}
+
+/** Every 30-minute start time on weekdays from tomorrow to 12 months ahead, 9am to 5pm Calgary time. */
 export function candidateSlots(): { start: number; end: number }[] {
   const t = calgaryToday();
   const out: { start: number; end: number }[] = [];
-  let days = 0;
-  for (let i = 1; i <= 14; i++) {
+  for (let i = 1; i <= MAX_DAYS_AHEAD; i++) {
     const day = new Date(Date.UTC(t.y, t.m - 1, t.d + i));
     const dow = day.getUTCDay();
     if (dow === 0 || dow === 6) continue;
-    days++;
     for (let mins = DAY_START_HOUR * 60; mins + SLOT_MINUTES <= DAY_END_HOUR * 60; mins += SLOT_MINUTES) {
       const start = calgaryToUtc(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate(), Math.floor(mins / 60), mins % 60);
       out.push({ start, end: start + SLOT_MINUTES * 60000 });
@@ -104,6 +109,6 @@ export function candidateSlots(): { start: number; end: number }[] {
   return out;
 }
 
-export function freeSlots(busy: { start: number; end: number }[]) {
-  return candidateSlots().filter((s) => !busy.some((b) => s.start < b.end && s.end > b.start));
+export function freeSlots(busy: { start: number; end: number }[], candidates = candidateSlots()) {
+  return candidates.filter((s) => !busy.some((b) => s.start < b.end && s.end > b.start));
 }

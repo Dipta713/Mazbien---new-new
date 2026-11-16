@@ -2,7 +2,7 @@
 // Shown on the "Sent to a consultant" screen: 1) deposit (Stripe), 2) book a meeting (Google Calendar + Google Maps).
 // Meeting times stay locked until the deposit is paid.
 import { useEffect, useState } from "react";
-import { CalendarDays, CreditCard, Lock, MapPin, Video } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, CreditCard, Lock, MapPin, Video } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
@@ -39,7 +39,8 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
   const [depositBusy, setDepositBusy] = useState(false);
   // meeting
   const [type, setType] = useState<"video" | "in_person">("video");
-  const [slots, setSlots] = useState<string[] | null>(null);
+  const [month, setMonth] = useState(() => dayKey(new Date().toISOString()).slice(0, 7)); // YYYY-MM being shown
+  const [cache, setCache] = useState<Record<string, string[]>>({});
   const [slotsErr, setSlotsErr] = useState<ApiError | null>(null);
   const [pickedDay, setPickedDay] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
@@ -71,14 +72,14 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
 
   // Only ask for the consultant's open times once the deposit is paid.
   useEffect(() => {
-    if (deposit !== "none" && !booking && slots === null) loadSlots();
+    if (deposit !== "none" && !booking && cache[month] === undefined) loadMonth(month);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deposit, booking]);
+  }, [deposit, booking, month]);
 
-  async function loadSlots() {
+  async function loadMonth(m: string) {
     setSlotsErr(null);
-    const r = await call<{ slots: string[] }>(`/api/calendar/slots?assessmentId=${encodeURIComponent(assessmentId)}`);
-    if (r.ok) setSlots(r.data.slots); else { setSlots([]); setSlotsErr(r.error); }
+    const r = await call<{ slots: string[] }>(`/api/calendar/slots?assessmentId=${encodeURIComponent(assessmentId)}&month=${m}`);
+    if (r.ok) setCache((c) => ({ ...c, [m]: r.data.slots })); else setSlotsErr(r.error);
   }
 
   async function startDeposit() {
@@ -108,16 +109,28 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
     const r = await call<{ startsAt: string; meetLink: string | null }>("/api/calendar/book", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assessmentId, startISO: picked, type, address: type === "in_person" ? address : undefined }) });
     setBookBusy(false);
     if (r.ok) setBooking({ startsAt: r.data.startsAt, meetLink: r.data.meetLink, type });
-    else { setBookErr(r.error); if (r.error.code === "slot_taken") { setPicked(null); loadSlots(); } }
+    else { setBookErr(r.error); if (r.error.code === "slot_taken") { setPicked(null); loadMonth(month); } }
   }
 
-  // ---- calendar: the next 14 days, Monday first, weekends greyed out ----
-  const slotsByDay = (slots ?? []).reduce<Record<string, string[]>>((acc, s) => { (acc[dayKey(s)] ||= []).push(s); return acc; }, {});
-  const [ty, tm, td] = dayKey(new Date().toISOString()).split("-").map(Number);
-  const days = Array.from({ length: 14 }, (_, i) => new Date(Date.UTC(ty, tm - 1, td + 1 + i)));
-  const lead = (days[0].getUTCDay() + 6) % 7; // empty cells so the first day lands under the right weekday
-  const cells: (Date | null)[] = [...Array(lead).fill(null), ...days];
-  const rangeLabel = `${days[0].toLocaleDateString("en-CA", { timeZone: "UTC", month: "short", day: "numeric" })} to ${days[13].toLocaleDateString("en-CA", { timeZone: "UTC", month: "short", day: "numeric" })}`;
+  // ---- calendar: one month at a time, Monday first, up to 12 months ahead ----
+  const slots = cache[month];
+  const slotsByDay = (slots ?? []).reduce<Record<string, string[]>>((acc, x) => { (acc[dayKey(x)] ||= []).push(x); return acc; }, {});
+  const [ty, tm] = dayKey(new Date().toISOString()).split("-").map(Number);
+  const [cy, cm] = month.split("-").map(Number);
+  const nowIdx = ty * 12 + tm - 1;
+  const viewIdx = cy * 12 + cm - 1;
+  const canPrev = viewIdx > nowIdx;
+  const canNext = viewIdx < nowIdx + 12;
+  const first = new Date(Date.UTC(cy, cm - 1, 1));
+  const daysInMonth = new Date(Date.UTC(cy, cm, 0)).getUTCDate();
+  const lead = (first.getUTCDay() + 6) % 7; // empty cells so day 1 lands under the right weekday
+  const cells: (number | null)[] = [...Array(lead).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
+  const monthTitle = first.toLocaleDateString("en-CA", { timeZone: "UTC", month: "long", year: "numeric" });
+  function changeMonth(delta: number) {
+    const idx = viewIdx + delta;
+    setMonth(`${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, "0")}`);
+    setPickedDay(null); setPicked(null); setBookErr(null);
+  }
   const officeLink = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(address || "")}&destination=${encodeURIComponent("Calgary, AB")}&travelmode=transit`;
   const unlocked = deposit !== "none";
 
@@ -203,43 +216,47 @@ export default function NextSteps({ assessmentId }: { assessmentId: string }) {
               </div>
             )}
 
-            <h3 className="mt-6 font-bold">Pick a day <span className="font-normal text-ink/50">({rangeLabel}, Calgary time)</span></h3>
-            {slots === null && <p className="mt-2 text-sm text-ink/60">Loading the consultant's calendar…</p>}
+            <h3 className="mt-6 font-bold">Pick a day <span className="font-normal text-ink/50">(Calgary time)</span></h3>
             {slotsErr && (
               <div role="alert" className="mt-2 rounded-xl bg-pink-soft p-3 text-sm text-pink">
                 <p className="font-semibold">{slotsErr.userMessage}</p>
                 <div className="mt-2 flex gap-4 font-bold">
-                  <button type="button" className="underline" onClick={loadSlots}>Try again</button>
+                  <button type="button" className="underline" onClick={() => loadMonth(month)}>Try again</button>
                   <Link className="underline" href={`/dashboard/${assessmentId}`}>Message the consultant</Link>
                 </div>
               </div>
             )}
 
-            {slots !== null && !slotsErr && (
-              <div className="mt-3 max-w-md">
-                <div className="grid grid-cols-7 gap-1.5 text-center text-xs font-bold text-ink/50">
-                  {WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
-                </div>
-                <div className="mt-1.5 grid grid-cols-7 gap-1.5">
-                  {cells.map((d, i) => {
-                    if (!d) return <div key={`e${i}`} />;
-                    const key = d.toISOString().slice(0, 10);
-                    const weekend = d.getUTCDay() === 0 || d.getUTCDay() === 6;
-                    const open = (slotsByDay[key]?.length ?? 0) > 0;
-                    const sel = pickedDay === key;
-                    return (
-                      <button key={key} type="button" disabled={!open} aria-pressed={sel}
-                        onClick={() => { setPickedDay(key); setPicked(null); }}
-                        title={weekend ? "Closed on weekends" : open ? "Open times" : "No open times"}
-                        className={`aspect-square rounded-xl border-2 text-sm font-bold transition ${sel ? "border-brand bg-brand text-white" : open ? "border-ink/10 bg-white hover:border-brand/40" : weekend ? "border-transparent bg-ink/5 text-ink/25" : "border-transparent bg-ink/5 text-ink/30 line-through"}`}>
-                        {d.getUTCDate()}
-                      </button>
-                    );
-                  })}
-                </div>
-                {Object.keys(slotsByDay).length === 0 && <p className="mt-3 text-sm text-ink/60">No open times in the next two weeks. Message the consultant to arrange one.</p>}
+            <div className="mt-3 max-w-md">
+              <div className="flex items-center justify-between">
+                <button type="button" aria-label="Previous month" disabled={!canPrev} onClick={() => changeMonth(-1)} className="grid h-9 w-9 place-items-center rounded-full border-2 border-ink/10 bg-white disabled:opacity-30"><ChevronLeft size={18} /></button>
+                <p className="font-display text-lg font-extrabold">{monthTitle}</p>
+                <button type="button" aria-label="Next month" disabled={!canNext} onClick={() => changeMonth(1)} className="grid h-9 w-9 place-items-center rounded-full border-2 border-ink/10 bg-white disabled:opacity-30"><ChevronRight size={18} /></button>
               </div>
-            )}
+              <div className="mt-3 grid grid-cols-7 gap-1.5 text-center text-xs font-bold text-ink/50">
+                {WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
+              </div>
+              <div className="mt-1.5 grid grid-cols-7 gap-1.5">
+                {cells.map((day, i) => {
+                  if (day === null) return <div key={`e${i}`} />;
+                  const key = `${month}-${String(day).padStart(2, "0")}`;
+                  const dow = new Date(Date.UTC(cy, cm - 1, day)).getUTCDay();
+                  const weekend = dow === 0 || dow === 6;
+                  const open = (slotsByDay[key]?.length ?? 0) > 0;
+                  const sel = pickedDay === key;
+                  return (
+                    <button key={key} type="button" disabled={!open} aria-pressed={sel}
+                      onClick={() => { setPickedDay(key); setPicked(null); }}
+                      title={weekend ? "Closed on weekends" : open ? "Open times" : "No open times"}
+                      className={`aspect-square rounded-xl border-2 text-sm font-bold transition ${sel ? "border-brand bg-brand text-white" : open ? "border-ink/10 bg-white hover:border-brand/40" : weekend ? "border-transparent bg-ink/5 text-ink/25" : "border-transparent bg-ink/5 text-ink/30 line-through"}`}>
+                      {day}
+                    </button>
+                  );
+                })}
+              </div>
+              {slots === undefined && !slotsErr && <p className="mt-3 text-sm text-ink/60">Loading the consultant's calendar…</p>}
+              {slots !== undefined && Object.keys(slotsByDay).length === 0 && <p className="mt-3 text-sm text-ink/60">No open times this month. Try another month or message the consultant.</p>}
+            </div>
 
             {pickedDay && slotsByDay[pickedDay] && (
               <div className="mt-5">
