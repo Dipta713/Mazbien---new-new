@@ -1,7 +1,7 @@
 // One place that writes integration logs. In Vercel: Project -> Logs. Locally: your terminal.
 // Search the logs for "[integration]" to find these lines.
 export function logIntegration(entry: {
-  service: "stripe" | "google_calendar" | "google_maps" | "email";
+  service: "stripe" | "google_calendar" | "google_maps" | "email" | "anthropic";
   action: string;
   ok: boolean;
   status?: number;

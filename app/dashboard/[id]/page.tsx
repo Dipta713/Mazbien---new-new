@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { getSessionInfo } from "@/lib/supabase/server";
 import Link from "next/link";
 import MessageBox from "./MessageBox";
+import AiSummary from "./AiSummary";
 import { getQuote, DEPOSIT_AMOUNT } from "@/lib/quote";
 import { money } from "@/lib/format";
 
@@ -12,7 +13,7 @@ export default async function AssessmentView({ params }: { params: { id: string 
 
   const { data: assessment } = await supabase
     .from("assessments")
-    .select("id, status")
+    .select("id, status, ai_summary")
     .eq("id", id)
     .single();
   if (!assessment) notFound();
@@ -127,6 +128,8 @@ export default async function AssessmentView({ params }: { params: { id: string 
           )}
         </section>
       )}
+
+      {assessment.status !== "draft" && <AiSummary assessmentId={id} initial={(assessment as any).ai_summary ?? null} />}
 
       <h2 className="text-3xl font-bold">Your answers</h2>
       <p className="mt-1 text-ink/60">
